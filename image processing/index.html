@@ -4,7 +4,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
-  <title>Real-time Stereo Video Processing with Three.js</title>
+  <title>Real-time Video Processing with Three.js</title>
   <style>
     body {
       margin: 0;
@@ -37,62 +37,7 @@
     import WEBGL from "three/addons/capabilities/WebGL.js";
     
     // Import our shared image processing module
-    import { TextureProcessor, vertexShader } from "./VideoProcessor.js";
-
-    // Custom Fragment Shader for averaging the Top and Bottom halves of the stereo video
-    const fragmentShaderStereo = `
-    precision highp float;
-
-    // Input texture and parameters
-    uniform sampler2D imageTexture; // The stereo video frame
-    uniform int halfHeight;         // Half the height of the video
-
-    // Output color of the pixel
-    out vec4 out_FragColor;
-
-    uniform int anaglyphMethod; // 0= True , 1= Gray , 2= Color , 3= Half , 4= Dubois
-
-    float luminance(vec3 color) {
-      return dot(color, vec3(0.299, 0.587, 0.114));
-    }
-
-    // Dubois Anaglyph Coefficients
-    mat3 LM = mat3(
-      0.437, 0.449, 0.164,
-      -0.062, -0.062, -0.024,
-      -0.048, -0.050, -0.017
-    );
-    
-    mat3 RM = mat3(
-      -0.011, -0.032, -0.007,
-      0.377, 0.761, 0.009,
-      -0.026, -0.093, 1.234
-    );
-
-    void main(void) {
-      // Coordinates for the bottom half (Right image)
-      ivec2 coordBottom = ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y));
-      
-      // Coordinates for the top half (Left image)
-      ivec2 coordTop = ivec2(int(gl_FragCoord.x), int(gl_FragCoord.y) + halfHeight);
-
-      // Fetch pixel colors
-      vec4 colorBottom = texelFetch(imageTexture, coordBottom, 0); // 0 - level of detail (no mipmaps)
-      vec4 colorTop = texelFetch(imageTexture, coordTop, 0); // texelFetch - coordinates in integer pixels
-
-      if (anaglyphMethod == 0) {
-        out_FragColor = vec4(luminance(colorTop.rgb), 0, luminance(colorBottom.rgb), 1.0); // True Anaglyph
-      } else if (anaglyphMethod == 1) {
-        out_FragColor = vec4(luminance(colorTop.rgb), luminance(colorBottom.rgb), luminance(colorBottom.rgb), 1.0); // Gray Anaglyph
-      } else if (anaglyphMethod == 2) {
-        out_FragColor = vec4(colorTop.r, colorBottom.g, colorBottom.b, 1.0); // Color Anaglyph
-      } else if (anaglyphMethod == 3) {
-        out_FragColor = vec4(luminance(colorTop.rgb), colorBottom.g, colorBottom.b, 1.0); // Half Color Anaglyph
-      } else {
-        out_FragColor = vec4(clamp(vec3(LM * colorTop.rgb + RM * colorBottom.rgb), 0.0, 1.0), 1.0); // Dubois Anaglyph
-      }
-  }
-    `;
+    import { TextureProcessor, vertexShader, fragmentShader } from "../VideoProcessor.js";
 
     // --- Main Application Variables ---
     let camera, controls, scene, renderer;
@@ -104,7 +49,7 @@
     animate();
 
     function init() {
-      // 1. Check for WebGL 2 support
+      // 1. Check for WebGL 2 support (needed for our shader features like texelFetch)
       if (WEBGL.isWebGL2Available() === false) {
         document.body.appendChild(WEBGL.getWebGL2ErrorMessage());
         return;
@@ -125,7 +70,7 @@
       camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.001, 10);
       camera.position.z = 1.0;
 
-      // 4. Setup Controls
+      // 4. Setup Controls (allows user to rotate/zoom the camera)
       controls = new OrbitControls(camera, renderer.domElement);
       controls.minDistance = 0.005;
       controls.maxDistance = 2.0;
@@ -133,7 +78,7 @@
 
       // 5. Setup Video Element
       video = document.createElement("video");
-      video.src = "/video/video_1080p_30fps_stereo.mp4";
+      video.src = "/video/video.mp4";
       video.load();
       video.muted = true; // Video must be muted to autoplay in many browsers
       video.loop = true;
@@ -147,33 +92,37 @@
         videoTexture.generateMipmaps = false;
         videoTexture.format = THREE.RGBAFormat;
 
-        const halfHeight = Math.floor(video.videoHeight / 2);
-
-        // Create our custom shader material for stereo processing
+        // Create our custom shader material using imported shaders
         processingMaterial = new THREE.RawShaderMaterial({
           uniforms: {
+            colorScaleR: { value: 1.0 },
+            colorScaleG: { value: 1.0 },
+            colorScaleB: { value: 1.0 },
+            invertColors: { value: false },
             imageTexture: { value: videoTexture },
-            halfHeight: { value: halfHeight },
-            anaglyphMethod: { value: 0 },
+            filterImage: { value: 0 },
+            sigma: {value: 1.0},
+            kernelSize: {value: 5},
+            laplacianMode: {value: 0},
+            horizontal: {value: true},
+            medianKernelSize: {value: 3},
           },
           vertexShader: vertexShader,
-          fragmentShader: fragmentShaderStereo,
+          fragmentShader: fragmentShader,
           glslVersion: THREE.GLSL3,
         });
 
-        // Initialize our off-screen processor. Output size is videoWidth x halfHeight
+        // Initialize our off-screen processor
         textureProcessor = new TextureProcessor(
           video.videoWidth,
-          halfHeight,
-          processingMaterial
+          video.videoHeight,
+          processingMaterial,
         );
 
-        // Aspect ratios
-        const processedAspectRatio = halfHeight / video.videoWidth;
-        const originalAspectRatio = video.videoHeight / video.videoWidth;
+        const aspectRatio = video.videoHeight / video.videoWidth;
 
-        // Create the First Plane (showing processed averaged video)
-        const processedGeometry = new THREE.PlaneGeometry(1, processedAspectRatio);
+        // Create the First Plane (showing processed video)
+        const processedGeometry = new THREE.PlaneGeometry(1, aspectRatio);
         const processedMaterial = new THREE.MeshBasicMaterial({
           map: textureProcessor.renderTarget.texture, // Use processed texture
           side: THREE.DoubleSide,
@@ -182,8 +131,8 @@
         processedPlane.position.z = 0.15; // Move slightly forward
         scene.add(processedPlane);
 
-        // Create the Second Plane (showing original stereo video)
-        const originalGeometry = new THREE.PlaneGeometry(1, originalAspectRatio);
+        // Create the Second Plane (showing original video)
+        const originalGeometry = new THREE.PlaneGeometry(1, aspectRatio);
         const originalMaterial = new THREE.MeshBasicMaterial({
           map: videoTexture, // Use raw video texture
           side: THREE.DoubleSide,
@@ -205,19 +154,35 @@
 
     function setupGUI() {
       const gui = new GUI();
+      const modesL = {
+        "Color": 0,
+        "Grayscale": 1,
+      }
 
-      const params = {
-        anaglyphMethod: 0, //True Anaglyph
-      };
-
-      const anaglyphs = {
-        "True Anaglyph": 0,
-        "Gray Anaglyph": 1,
-        "Color Anaglyph": 2,
-        "Half Color Anaglyph": 3,
-        "Dubois Anaglyph": 4,
-      };
-
+      const filters = {
+        None: 0,
+        GaussianBlur: 1,
+        Laplacian: 2,
+        GaussianBlur1D: 3,
+        MedianFilter: 4,
+      }
+      
+      // Controls for shader uniforms
+      gui.add(processingMaterial.uniforms.colorScaleR, "value", 0, 1).name("Red Channel");
+      gui.add(processingMaterial.uniforms.colorScaleG, "value", 0, 1).name("Green Channel");
+      gui.add(processingMaterial.uniforms.colorScaleB, "value", 0, 1).name("Blue Channel");
+      gui.add(processingMaterial.uniforms.invertColors, "value").name("Invert Colors");
+      gui.add(processingMaterial.uniforms.filterImage, "value", filters).name("Filter").onChange((value) => {
+        processingMaterial.uniforms.filterImage.value = value;
+      });
+      gui.add(processingMaterial.uniforms.kernelSize, "value", 1, 21, 2).name("Kernel size").onChange((v) => {
+        if (v % 2 === 0) {
+          processingMaterial.uniforms.kernelSize.value = v + 1;
+        }
+      });
+      gui.add(processingMaterial.uniforms.sigma, "value", 0.1, 10, 0.5).name("Sigma");
+      gui.add(processingMaterial.uniforms.laplacianMode, "value", modesL).name("Laplacian Mode");
+      gui.add(processingMaterial.uniforms.medianKernelSize, "value", [3, 5]).name("Median Kernel Size");
       // Video playback controls
       const videoControls = {
         togglePlayPause: () => {
@@ -231,10 +196,6 @@
 
       gui.add(videoControls, "togglePlayPause").name("Play / Pause");
       gui.add(videoControls, "skipForward").name("Skip +10s");
-
-      gui.add(params, "anaglyphMethod", anaglyphs).name("Anaglyph Method").onChange((value) => {
-        processingMaterial.uniforms.anaglyphMethod.value = value;
-      });
     }
 
     function onWindowResize() {
@@ -258,6 +219,7 @@
       // 3. Render the main 3D scene (containing our two planes)
       renderer.render(scene, camera);
     }
+
   </script>
 </body>
 </html>
